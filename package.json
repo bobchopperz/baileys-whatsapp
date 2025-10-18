@@ -1,0 +1,15 @@
+{
+  "name": "baileys-whatsapp",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "private": true,
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.20",
+    "express": "^5.1.0",
+    "socket.io": "^4.8.1"
+  }
+}

@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Baileys WhatsApp Chat</title>
+    <style>
+        body { font-family: sans-serif; margin: 0; padding: 20px; background-color: #f0f2f5; }
+        #login-container, #chat-container { max-width: 800px; margin: 0 auto; background: #fff; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); }
+        .header { background-color: #075E54; color: white; padding: 15px 20px; border-top-left-radius: 8px; border-top-right-radius: 8px; display: flex; justify-content: space-between; align-items: center; }
+        .header h1 { margin: 0; font-size: 1.2em; }
+        .header .user-info { font-size: 0.9em; }
+        #logout-btn { background-color: #dc3545; color: white; border: none; padding: 8px 12px; border-radius: 5px; cursor: pointer; font-size: 0.9em; }
+        #logout-btn:hover { background-color: #c82333; }
+        .content { padding: 20px; }
+        #qr-code { text-align: center; }
+        #qr-code canvas { border: 1px solid #ddd; }
+        #messages { list-style-type: none; margin: 0; padding: 0; }
+        #messages li { padding: 10px 15px; border-bottom: 1px solid #eee; }
+        #messages li:last-child { border-bottom: none; }
+        #messages li .sender { font-weight: bold; color: #075E54; }
+        #chat-container { display: none; /* Sembunyikan chat container secara default */ }
+    </style>
+</head>
+<body>
+
+    <div id="login-container">
+        <div class="header">
+            <h1>Login ke WhatsApp</h1>
+        </div>
+        <div class="content">
+            <p>Pindai QR code di bawah ini dengan aplikasi WhatsApp Anda.</p>
+            <div id="qr-code"></div>
+            <p id="status-message" style="text-align:center; margin-top: 15px;">Menunggu QR code...</p>
+        </div>
+    </div>
+
+    <div id="chat-container">
+        <div class="header">
+            <div class="user-info">
+                Terhubung sebagai: <strong id="user-number"></strong>
+            </div>
+            <button id="logout-btn">Logout</button>
+        </div>
+        <div class="content">
+            <ul id="messages"></ul>
+        </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
+    <script>
+        const socket = io();
+
+        const loginContainer = document.getElementById('login-container');
+        const chatContainer = document.getElementById('chat-container');
+        const qrCodeContainer = document.getElementById('qr-code');
+        const statusMessage = document.getElementById('status-message');
+        const messagesList = document.getElementById('messages');
+        const userNumberEl = document.getElementById('user-number');
+        const logoutBtn = document.getElementById('logout-btn');
+
+        socket.on('qr_code', (qr) => {
+            console.log('QR Code diterima');
+            qrCodeContainer.innerHTML = '';
+            const qrCode = qrcode(0, 'L');
+            qrCode.addData(qr);
+            qrCode.make();
+            qrCodeContainer.innerHTML = qrCode.createImgTag(6, 10);
+            statusMessage.textContent = 'Silakan pindai QR code.';
+        });
+
+        socket.on('status', (data) => {
+            console.log('Status koneksi:', data.status);
+            if (data.status === 'Connected') {
+                loginContainer.style.display = 'none';
+                chatContainer.style.display = 'block';
+                userNumberEl.textContent = data.user;
+                messagesList.innerHTML = ''; // Bersihkan chat lama saat login baru
+            } else {
+                loginContainer.style.display = 'block';
+                chatContainer.style.display = 'none';
+                statusMessage.textContent = 'Koneksi terputus. Silakan login kembali.';
+                qrCodeContainer.innerHTML = ''; // Bersihkan QR code saat logout
+            }
+        });
+
+        socket.on('new_message', (msg) => {
+            const item = document.createElement('li');
+            const sender = document.createElement('div');
+            sender.className = 'sender';
+            sender.textContent = msg.from;
+
+            const message = document.createElement('div');
+            message.textContent = msg.message;
+
+            item.appendChild(sender);
+            item.appendChild(message);
+            messagesList.appendChild(item);
+            window.scrollTo(0, document.body.scrollHeight);
+        });
+
+        logoutBtn.addEventListener('click', () => {
+            console.log('Mengirim permintaan logout ke server');
+            socket.emit('logout');
+        });
+    </script>
+</body>
+</html>

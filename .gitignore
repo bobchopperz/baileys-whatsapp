@@ -4,6 +4,9 @@
 /build
 /tmp
 
+# bailyeys' auth directory
+/auth_info_baileys
+
 # Logs
 logs
 *.log
