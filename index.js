@@ -120,13 +120,16 @@ io.on('connection', (socket) => {
     socket.on('logout', async () => {
         if (sock) {
             console.log('Logout request received. Logging out...');
+            io.emit('status', { status: 'Logging out' });
             try {
                 await sock.logout();
             } catch (error) {
-                console.error('Error during logout:', error);
+                console.error('Error during sock.logout():', error);
+                io.emit('status', { status: 'Logout failed', error: error.message });
             }
         } else {
             console.log('Logout request received, but no active WhatsApp connection.');
+            io.emit('status', { status: 'Disconnected' });
         }
     });
 
@@ -160,13 +163,15 @@ async function connectToWhatsApp() {
 
         if (connection === 'close') {
             currentQR = null;
-            const shouldReconnect = lastDisconnect.error?.output?.statusCode !== DisconnectReason.loggedOut;
-            console.log('Connection closed due to ', lastDisconnect.error, ', reconnecting: ', shouldReconnect);
+            const statusCode = lastDisconnect.error?.output?.statusCode;
+            const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+            
+            console.log(`Connection closed. Reason: "${lastDisconnect.error?.message}", status code: ${statusCode}. Reconnecting: ${shouldReconnect}`);
 
             if (shouldReconnect) {
                 connectToWhatsApp();
             } else {
-                console.log('Permanent disconnect detected. Clearing session and restarting...');
+                console.log('Permanent disconnect (logged out). Clearing session and restarting...');
                 io.emit('status', { status: 'Disconnected' });
                 try {
                     await clearData();
