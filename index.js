@@ -5,10 +5,14 @@ const http = require('http');
 const { Server } = require("socket.io");
 const path = require('path');
 const mongoose = require('mongoose');
+const kirimPesan = require('./routes/kirimPesan.js');
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
+
+// Middleware to parse JSON request bodies
+app.use(express.json());
 
 const PORT = process.env.PORT;
 const MONGO_URI = process.env.MONGO_URI;
@@ -97,6 +101,8 @@ const useMongoDBAuthState = async (sessionId) => {
 };
 // --- End of Mongoose / MongoDB Auth Store ---
 
+// untuk kirim pesan
+app.use('/kirim-pesan', kirimPesan.router);
 
 // Menyajikan file statis dari direktori root
 app.use(express.static(__dirname));
@@ -151,6 +157,9 @@ async function connectToWhatsApp() {
         shouldIgnoreJid: jid => jid.includes('@broadcast'),
     });
 
+    // Pass the sock object to the message sending router
+    kirimPesan.init(sock);
+
     sock.ev.on('creds.update', saveCreds);
 
     sock.ev.on('connection.update', async (update) => {
@@ -176,6 +185,7 @@ async function connectToWhatsApp() {
                 try {
                     await clearData();
                     sock = undefined;
+                    kirimPesan.init(null); // Clear the sock in the router as well
                     connectToWhatsApp();
                 } catch (error) {
                     console.error('Error during cleanup and restart:', error);
