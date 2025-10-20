@@ -35,7 +35,6 @@ const AuthSessionSchema = new mongoose.Schema({
   _id: String,
   session: String,
 });
-// We use a single collection for all session data. The model name can be generic.
 const AuthSession = mongoose.model('AuthSession', AuthSessionSchema, MONGO_COLLECTION);
 
 const useMongoDBAuthState = async (sessionId) => {
@@ -43,7 +42,6 @@ const useMongoDBAuthState = async (sessionId) => {
 
   const writeData = async (data, id) => {
     const session = JSON.stringify(data, BufferJSON.replacer);
-    // Use the collection name from .env for the model
     await AuthSession.updateOne({ _id: getKey(id) }, { _id: getKey(id), session }, { upsert: true });
   };
 
@@ -55,11 +53,6 @@ const useMongoDBAuthState = async (sessionId) => {
     return null;
   };
 
-  const removeData = async (id) => {
-    await AuthSession.deleteOne({ _id: getKey(id) });
-  };
-
-  // Clear all data related to this session ID
   const clearData = async () => {
       await AuthSession.deleteMany({ _id: { $regex: `^${sessionId}-` } });
   }
@@ -99,7 +92,7 @@ const useMongoDBAuthState = async (sessionId) => {
     saveCreds: () => {
       return writeData(creds, 'creds');
     },
-    clearData, // Expose clearData for logout
+    clearData,
   };
 };
 // --- End of Mongoose / MongoDB Auth Store ---
@@ -116,16 +109,11 @@ app.get('/', (req, res) => {
 io.on('connection', (socket) => {
     console.log('A browser connected.');
 
-    // On refresh or new connection, check the existing state
     if (sock && sock.user) {
-        console.log('An active session was found, sending status to browser.');
         socket.emit('status', { status: 'Connected', user: sock.user.id.split(':')[0] });
     } else if (currentQR) {
-        console.log('No active session, but a QR code is available. Sending to browser.');
         socket.emit('qr_code', currentQR);
     } else {
-        console.log('No active session or QR code.');
-        // Optionally, you can emit a status like 'disconnected' or 'waiting'
         socket.emit('status', { status: 'Disconnected' });
     }
 
@@ -133,7 +121,7 @@ io.on('connection', (socket) => {
         if (sock) {
             console.log('Logout request received. Logging out...');
             try {
-                await sock.logout(); // This will trigger the 'connection.update' event with DisconnectReason.loggedOut
+                await sock.logout();
             } catch (error) {
                 console.error('Error during logout:', error);
             }
@@ -149,7 +137,6 @@ io.on('connection', (socket) => {
 
 
 async function connectToWhatsApp() {
-    // A unique session ID. Using the collection name is a good practice.
     const sessionId = MONGO_COLLECTION;
     const { state, saveCreds, clearData } = await useMongoDBAuthState(sessionId);
     const { version } = await fetchLatestBaileysVersion();
@@ -158,7 +145,7 @@ async function connectToWhatsApp() {
         version,
         printQRInTerminal: false,
         auth: state,
-        shouldIgnoreJid: jid => jid.includes('@broadcast'), // Ignore broadcast messages
+        shouldIgnoreJid: jid => jid.includes('@broadcast'),
     });
 
     sock.ev.on('creds.update', saveCreds);
@@ -170,25 +157,27 @@ async function connectToWhatsApp() {
             currentQR = qr;
             io.emit('qr_code', qr);
         }
+
         if (connection === 'close') {
-            currentQR = null; // QR is no longer valid
-            const shouldReconnect = (lastDisconnect.error)?.output?.statusCode !== DisconnectReason.loggedOut;
-            console.log('Connection closed due to ', lastDisconnect.error, ', reconnecting ', shouldReconnect);
-            io.emit('status', { status: 'Connection Closed' });
+            currentQR = null;
+            const shouldReconnect = lastDisconnect.error?.output?.statusCode !== DisconnectReason.loggedOut;
+            console.log('Connection closed due to ', lastDisconnect.error, ', reconnecting: ', shouldReconnect);
 
             if (shouldReconnect) {
                 connectToWhatsApp();
             } else {
-                console.log('Connection closed permanently.');
-                if ((lastDisconnect.error)?.output?.statusCode === DisconnectReason.loggedOut) {
-                    console.log('Logged out, clearing session data...');
-                    await clearData(); // Clear all session data from MongoDB
-                    io.emit('status', { status: 'Disconnected' });
+                console.log('Permanent disconnect detected. Clearing session and restarting...');
+                io.emit('status', { status: 'Disconnected' });
+                try {
+                    await clearData();
+                    sock = undefined;
+                    connectToWhatsApp();
+                } catch (error) {
+                    console.error('Error during cleanup and restart:', error);
                 }
-                sock = undefined;
             }
         } else if (connection === 'open') {
-            currentQR = null; // QR is no longer needed
+            currentQR = null;
             const userNumber = sock.user.id.split(':')[0];
             console.log('WhatsApp connection open, connected as', userNumber);
             io.emit('status', { status: 'Connected', user: userNumber });
