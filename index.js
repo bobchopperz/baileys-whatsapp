@@ -11,30 +11,39 @@ const server = http.createServer(app);
 const io = new Server(server);
 
 const PORT = process.env.PORT || 3000;
-
 const MONGO_URI = process.env.MONGO_URI;
 const MONGO_COLLECTION = process.env.MONGO_COLLECTION || 'baileys_auth_session';
 
-let sock;
+if (!MONGO_URI) {
+    console.error("FATAL ERROR: MONGO_URI is not defined in .env file. Please add it and ensure it starts with mongodb://");
+    process.exit(1);
+}
 
-// --- Mongoose / MongoDB Auth Store ---
-// Pastikan instance MongoDB berjalan
+let sock;
+let currentQR = null; // Variable to store the current QR code
+
+// --- Mongoose / MongoDB Setup ---
 mongoose.connect(MONGO_URI)
   .then(() => console.log('Connected to MongoDB'))
-  .catch(err => console.error('Could not connect to MongoDB', err));
+  .catch(err => {
+      console.error('Could not connect to MongoDB. Please check your MONGO_URI in .env file.', err);
+      process.exit(1);
+  });
 
+// Schema for Baileys Auth Session
 const AuthSessionSchema = new mongoose.Schema({
   _id: String,
   session: String,
 });
-
-const AuthSession = mongoose.model(MONGO_COLLECTION, AuthSessionSchema);
+// We use a single collection for all session data. The model name can be generic.
+const AuthSession = mongoose.model('AuthSession', AuthSessionSchema, MONGO_COLLECTION);
 
 const useMongoDBAuthState = async (sessionId) => {
   const getKey = (id) => `${sessionId}-${id}`;
 
   const writeData = async (data, id) => {
     const session = JSON.stringify(data, BufferJSON.replacer);
+    // Use the collection name from .env for the model
     await AuthSession.updateOne({ _id: getKey(id) }, { _id: getKey(id), session }, { upsert: true });
   };
 
@@ -50,6 +59,7 @@ const useMongoDBAuthState = async (sessionId) => {
     await AuthSession.deleteOne({ _id: getKey(id) });
   };
 
+  // Clear all data related to this session ID
   const clearData = async () => {
       await AuthSession.deleteMany({ _id: { $regex: `^${sessionId}-` } });
   }
@@ -89,7 +99,7 @@ const useMongoDBAuthState = async (sessionId) => {
     saveCreds: () => {
       return writeData(creds, 'creds');
     },
-    clearData,
+    clearData, // Expose clearData for logout
   };
 };
 // --- End of Mongoose / MongoDB Auth Store ---
@@ -104,13 +114,26 @@ app.get('/', (req, res) => {
 
 // Socket.IO connection handling
 io.on('connection', (socket) => {
-    console.log('A user connected');
+    console.log('A browser connected.');
+
+    // On refresh or new connection, check the existing state
+    if (sock && sock.user) {
+        console.log('An active session was found, sending status to browser.');
+        socket.emit('status', { status: 'Connected', user: sock.user.id.split(':')[0] });
+    } else if (currentQR) {
+        console.log('No active session, but a QR code is available. Sending to browser.');
+        socket.emit('qr_code', currentQR);
+    } else {
+        console.log('No active session or QR code.');
+        // Optionally, you can emit a status like 'disconnected' or 'waiting'
+        socket.emit('status', { status: 'Disconnected' });
+    }
 
     socket.on('logout', async () => {
         if (sock) {
             console.log('Logout request received. Logging out...');
             try {
-                await sock.logout();
+                await sock.logout(); // This will trigger the 'connection.update' event with DisconnectReason.loggedOut
             } catch (error) {
                 console.error('Error during logout:', error);
             }
@@ -120,19 +143,22 @@ io.on('connection', (socket) => {
     });
 
     socket.on('disconnect', () => {
-        console.log('User disconnected');
+        console.log('Browser disconnected.');
     });
 });
 
 
 async function connectToWhatsApp() {
-    const { state, saveCreds, clearData } = await useMongoDBAuthState(MONGO_COLLECTION);
+    // A unique session ID. Using the collection name is a good practice.
+    const sessionId = MONGO_COLLECTION;
+    const { state, saveCreds, clearData } = await useMongoDBAuthState(sessionId);
     const { version } = await fetchLatestBaileysVersion();
 
     sock = makeWASocket({
         version,
         printQRInTerminal: false,
-        auth: state
+        auth: state,
+        shouldIgnoreJid: jid => jid.includes('@broadcast'), // Ignore broadcast messages
     });
 
     sock.ev.on('creds.update', saveCreds);
@@ -140,24 +166,29 @@ async function connectToWhatsApp() {
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
         if (qr) {
-            console.log('QR code received, sending to client.');
+            console.log('QR code received, sending to all clients.');
+            currentQR = qr;
             io.emit('qr_code', qr);
         }
         if (connection === 'close') {
+            currentQR = null; // QR is no longer valid
             const shouldReconnect = (lastDisconnect.error)?.output?.statusCode !== DisconnectReason.loggedOut;
             console.log('Connection closed due to ', lastDisconnect.error, ', reconnecting ', shouldReconnect);
             io.emit('status', { status: 'Connection Closed' });
+
             if (shouldReconnect) {
                 connectToWhatsApp();
             } else {
-                console.log('Connection closed permanently. Not reconnecting.');
+                console.log('Connection closed permanently.');
                 if ((lastDisconnect.error)?.output?.statusCode === DisconnectReason.loggedOut) {
                     console.log('Logged out, clearing session data...');
-                    await clearData();
+                    await clearData(); // Clear all session data from MongoDB
+                    io.emit('status', { status: 'Disconnected' });
                 }
                 sock = undefined;
             }
         } else if (connection === 'open') {
+            currentQR = null; // QR is no longer needed
             const userNumber = sock.user.id.split(':')[0];
             console.log('WhatsApp connection open, connected as', userNumber);
             io.emit('status', { status: 'Connected', user: userNumber });
