@@ -10,9 +10,9 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT;
 const MONGO_URI = process.env.MONGO_URI;
-const MONGO_COLLECTION = process.env.MONGO_COLLECTION || 'baileys_auth_session';
+const MONGO_COLLECTION = process.env.MONGO_COLLECTION;
 
 if (!MONGO_URI) {
     console.error("FATAL ERROR: MONGO_URI is not defined in .env file. Please add it and ensure it starts with mongodb://");
