@@ -16,6 +16,14 @@ const init = (sock) => {
 };
 
 router.post('/', async (req, res) => {
+    // Tambahkan pengecekan untuk req.body
+    if (!req.body) {
+        return res.status(400).json({
+            status: 'error',
+            message: 'Request body is missing. This endpoint expects a JSON payload. Did you mean to use /kirim-media with form-data?'
+        });
+    }
+
     const { number, message } = req.body;
 
     if (!whatsappSock) {
@@ -23,7 +31,7 @@ router.post('/', async (req, res) => {
     }
 
     if (!number || !message) {
-        return res.status(400).json({ status: 'error', message: 'Both "number" and "message" are required.' });
+        return res.status(400).json({ status: 'error', message: 'Both "number" and "message" are required in the JSON body.' });
     }
 
     try {

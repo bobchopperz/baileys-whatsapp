@@ -6,6 +6,8 @@ const { Server } = require("socket.io");
 const path = require('path');
 const mongoose = require('mongoose');
 const kirimPesan = require('./routes/kirimPesan.js');
+const kirimMedia = require('./routes/kirimMedia.js');
+const cetakPesan = require('./routes/cetakPesan.js');
 
 const app = express();
 const server = http.createServer(app);
@@ -13,8 +15,9 @@ const io = new Server(server);
 
 // Middleware to parse JSON request bodies
 app.use(express.json());
+app.use(express.urlencoded({ extended: true })); // Tambahkan ini untuk parsing form-data/urlencoded jika diperlukan
 
-const PORT = process.env.PORT;
+const PORT = process.env.PORT || 8000; // Fallback to 8000 if not defined
 const MONGO_URI = process.env.MONGO_URI;
 const MONGO_COLLECTION = process.env.MONGO_COLLECTION;
 
@@ -25,6 +28,15 @@ if (!MONGO_URI) {
 
 let sock;
 let currentQR = null; // Variable to store the current QR code
+
+// --- Printer Logic Variables ---
+let printerPairingCode = generatePairingCode(); // Generate code on start
+let printerSocket = null; // Store the active printer socket
+
+function generatePairingCode() {
+    return Math.floor(100000 + Math.random() * 900000).toString(); // 6 digit random number
+}
+// --- End Printer Logic Variables ---
 
 // --- Mongoose / MongoDB Setup ---
 mongoose.connect(MONGO_URI)
@@ -101,8 +113,10 @@ const useMongoDBAuthState = async (sessionId) => {
 };
 // --- End of Mongoose / MongoDB Auth Store ---
 
-// untuk kirim pesan
+// untuk kirim pesan & media
 app.use('/kirim-pesan', kirimPesan.router);
+app.use('/kirim-media', kirimMedia.router);
+app.use('/cetak-pesan', cetakPesan.router);
 
 // Menyajikan file statis dari direktori root
 app.use(express.static(__dirname));
@@ -113,8 +127,11 @@ app.get('/', (req, res) => {
 
 // Socket.IO connection handling
 io.on('connection', (socket) => {
-    console.log('A browser connected.');
+    // Ambil IP Address Client
+    const clientIp = socket.handshake.address;
+    // console.log(`New socket connection from IP: ${clientIp}`);
 
+    // --- WhatsApp Status ---
     if (sock && sock.user) {
         socket.emit('status', { status: 'Connected', user: sock.user.id.split(':')[0] });
     } else if (currentQR) {
@@ -122,6 +139,65 @@ io.on('connection', (socket) => {
     } else {
         socket.emit('status', { status: 'Disconnected' });
     }
+
+    // --- Printer Status ---
+    // Send current printer status to the newly connected client (Web UI)
+    socket.emit('printer_status', {
+        connected: !!printerSocket, 
+        code: printerSocket ? null : printerPairingCode // Only send code if not connected
+    });
+
+    // --- Printer Logic ---
+
+    // 1. Handle Printer Identification (from Android)
+    socket.on('identify_printer', (data) => {
+        const timestamp = new Date().toLocaleString();
+        console.log(`[${timestamp}] 🖨️  Printer connection attempt from IP: ${clientIp} | Code: ${data.code}`);
+
+        if (data.code === printerPairingCode) {
+            console.log(`[${timestamp}] ✅ Printer identified successfully! IP: ${clientIp}`);
+            printerSocket = socket;
+            cetakPesan.setPrinterSocket(printerSocket);
+            
+            // Notify Android
+            socket.emit('printer_connected', { status: true });
+
+            // Notify all Web clients
+            io.emit('printer_status', { connected: true, code: null });
+
+            // Handle printer disconnect
+            socket.on('disconnect', () => {
+                const disconnectTime = new Date().toLocaleString();
+                console.log(`[${disconnectTime}] ⚠️  Printer disconnected. IP: ${clientIp}`);
+                printerSocket = null;
+                cetakPesan.setPrinterSocket(null);
+                io.emit('printer_status', { connected: false, code: printerPairingCode });
+            });
+
+        } else {
+            console.log(`[${timestamp}] ❌ Printer identification failed. Invalid code. IP: ${clientIp}`);
+            socket.emit('printer_connected', { status: false, error: 'Invalid Code' });
+        }
+    });
+
+    // 2. Handle Disconnect Request (from Web UI)
+    socket.on('disconnect_printer', () => {
+        console.log('Web UI requested to disconnect printer.');
+        if (printerSocket) {
+            printerSocket.disconnect(true); // Force disconnect the printer socket
+            printerSocket = null;
+            cetakPesan.setPrinterSocket(null);
+        }
+        
+        // Generate NEW code for security
+        printerPairingCode = generatePairingCode();
+        console.log('New pairing code generated:', printerPairingCode);
+
+        // Notify all Web clients
+        io.emit('printer_status', { connected: false, code: printerPairingCode });
+    });
+
+    // --- End Printer Logic ---
 
     socket.on('logout', async () => {
         if (sock) {
@@ -140,7 +216,7 @@ io.on('connection', (socket) => {
     });
 
     socket.on('disconnect', () => {
-        console.log('Browser disconnected.');
+        // console.log('Client disconnected.');
     });
 });
 
@@ -157,8 +233,9 @@ async function connectToWhatsApp() {
         shouldIgnoreJid: jid => jid.includes('@broadcast'),
     });
 
-    // Pass the sock object to the message sending router
+    // Pass the sock object to the message sending routers
     kirimPesan.init(sock);
+    kirimMedia.init(sock);
 
     sock.ev.on('creds.update', saveCreds);
 
@@ -185,7 +262,8 @@ async function connectToWhatsApp() {
                 try {
                     await clearData();
                     sock = undefined;
-                    kirimPesan.init(null); // Clear the sock in the router as well
+                    kirimPesan.init(null);
+                    kirimMedia.init(null);
                     connectToWhatsApp();
                 } catch (error) {
                     console.error('Error during cleanup and restart:', error);
@@ -204,10 +282,48 @@ async function connectToWhatsApp() {
         if (!msg.key.fromMe && m.type === 'notify') {
             const sender = msg.key.remoteJid;
             const messageContent = msg.message?.conversation || msg.message?.extendedTextMessage?.text || '';
-            
-            if(messageContent) {
+            const imageCaption = msg.message?.imageMessage?.caption;
+
+            if (messageContent) {
                 console.log(`Pesan dari ${sender}: ${messageContent}`);
                 io.emit('new_message', { from: sender, message: messageContent });
+                
+                // --- PRINTER INTEGRATION ---
+                // Jika ada printer yang terhubung, kirim pesan ke printer
+                if (printerSocket) {
+                    console.log(`Sending message to printer...`);
+                    printerSocket.emit('print_message', {
+                        sender: sender.replace('@s.whatsapp.net', ''),
+                        message: messageContent,
+                        timestamp: new Date().toISOString()
+                    });
+                }
+            }
+
+            // Logic to forward image if caption is '/forward'
+            if (imageCaption && imageCaption.toLowerCase() === '/forward') {
+                console.log(`Received image with /forward caption from ${sender}`);
+
+                // Kakak, jangan lupa ganti nomor ini dengan nomor tujuan yang benar
+                const targetJid = '6281234567890@s.whatsapp.net';
+
+                try {
+                    // Forward the original message object
+                    await sock.sendMessage(targetJid, {
+                        forward: msg 
+                    });
+
+                    // Send a confirmation back to the sender
+                    await sock.sendMessage(sender, {
+                        text: 'Gambar sudah berhasil di-forward, kakak!' 
+                    });
+                    console.log(`Image from ${sender} forwarded to ${targetJid}`);
+                } catch (error) {
+                    console.error('Failed to forward image:', error);
+                    await sock.sendMessage(sender, { 
+                        text: 'Maaf, gagal mem-forward gambar.' 
+                    });
+                }
             }
         }
     });

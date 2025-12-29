@@ -4,8 +4,8 @@
     <title>Baileys WhatsApp Chat</title>
     <style>
         body { font-family: sans-serif; margin: 0; padding: 20px; background-color: #f0f2f5; }
-        #login-container, #chat-container { max-width: 800px; margin: 0 auto; background: #fff; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); }
-        .header { background-color: #075E54; color: white; padding: 15px 20px; border-top-left-radius: 8px; border-top-right-radius: 8px; display: flex; justify-content: space-between; align-items: center; }
+        #login-container, #chat-container { max-width: 800px; margin: 0 auto; background: #fff; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); overflow: hidden; }
+        .header { background-color: #075E54; color: white; padding: 15px 20px; display: flex; justify-content: space-between; align-items: center; }
         .header h1 { margin: 0; font-size: 1.2em; }
         .header .user-info { font-size: 0.9em; }
         #logout-btn { background-color: #dc3545; color: white; border: none; padding: 8px 12px; border-radius: 5px; cursor: pointer; font-size: 0.9em; }
@@ -18,14 +18,44 @@
         #messages li:last-child { border-bottom: none; }
         #messages li .sender { font-weight: bold; color: #075E54; }
         #chat-container { display: none; /* Sembunyikan chat container secara default */ }
+
+        /* Printer Status Styles - Adjusted to fit inside container */
+        #printer-container {
+            background: #f8f9fa; /* Light gray background */
+            border-bottom: 1px solid #e9ecef;
+            padding: 10px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 0.9em;
+        }
+        .printer-status-label { font-weight: bold; color: #555; }
+        .status-connected { color: #28a745; font-weight: bold; }
+        .status-disconnected { color: #dc3545; font-weight: bold; }
+        .pairing-code { font-family: monospace; font-size: 1.1em; background: #e2e6ea; padding: 3px 8px; border-radius: 4px; letter-spacing: 1px; margin-left: 5px;}
+        #disconnect-printer-btn { background-color: #dc3545; color: white; border: none; padding: 5px 10px; border-radius: 4px; cursor: pointer; font-size: 0.85em; display: none; }
+        #disconnect-printer-btn:hover { background-color: #c82333; }
     </style>
 </head>
 <body>
 
     <div id="login-container">
         <div class="header">
-            <h1>Login ke WhatsApp</h1>
+            <h1>WhatsApp and Printer Gateway</h1>
         </div>
+        
+        <!-- Printer Status Section (Moved Here) -->
+        <div id="printer-container">
+            <div>
+                <span class="printer-status-label">Printer:</span>
+                <span id="printer-status-text" class="status-disconnected">Disconnected</span>
+            </div>
+            <div id="printer-code-section">
+                Pairing Code: <span id="pairing-code-display" class="pairing-code">...</span>
+            </div>
+            <button id="disconnect-printer-btn">Disconnect</button>
+        </div>
+
         <div class="content">
             <p>Pindai QR code di bawah ini dengan aplikasi WhatsApp Anda.</p>
             <div id="qr-code"></div>
@@ -57,6 +87,12 @@
         const messagesList = document.getElementById('messages');
         const userNumberEl = document.getElementById('user-number');
         const logoutBtn = document.getElementById('logout-btn');
+
+        // Printer Elements
+        const printerStatusText = document.getElementById('printer-status-text');
+        const printerCodeSection = document.getElementById('printer-code-section');
+        const pairingCodeDisplay = document.getElementById('pairing-code-display');
+        const disconnectPrinterBtn = document.getElementById('disconnect-printer-btn');
 
         socket.on('qr_code', (qr) => {
             console.log('QR Code diterima');
@@ -101,6 +137,33 @@
         logoutBtn.addEventListener('click', () => {
             console.log('Mengirim permintaan logout ke server');
             socket.emit('logout');
+        });
+
+        // --- Printer Logic ---
+        socket.on('printer_status', (data) => {
+            console.log('Printer Status Update:', data);
+            if (data.connected) {
+                // Printer Connected
+                printerStatusText.textContent = 'Connected';
+                printerStatusText.className = 'status-connected';
+                
+                printerCodeSection.style.display = 'none'; // Hide code
+                disconnectPrinterBtn.style.display = 'block'; // Show disconnect button
+            } else {
+                // Printer Disconnected
+                printerStatusText.textContent = 'Disconnected';
+                printerStatusText.className = 'status-disconnected';
+                
+                printerCodeSection.style.display = 'block'; // Show code
+                pairingCodeDisplay.textContent = data.code || '...';
+                disconnectPrinterBtn.style.display = 'none'; // Hide disconnect button
+            }
+        });
+
+        disconnectPrinterBtn.addEventListener('click', () => {
+            if (confirm('Are you sure you want to disconnect the printer? This will generate a new pairing code.')) {
+                socket.emit('disconnect_printer');
+            }
         });
     </script>
 </body>
